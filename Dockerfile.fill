@@ -1,0 +1,17 @@
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/fill_db ./cmd/fill_db
+
+RUN go build -o fill_db ./cmd/fill_db
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+COPY --from=builder /app/fill_db .
+
+CMD ["./fill_db", "-api-url", "http://app:8080"]

@@ -1,6 +1,10 @@
+version: '3.8'
+
 services:
   app:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
     environment:
@@ -13,28 +17,67 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   postgres:
-    image: postgres:13
+    image: postgres:15
     environment:
+      - POSTGRES_DB=subscriptions
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=subscriptions
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
-    networks:
-      - app-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 10s
+      retries: 5
+
+  migrations:
+    image: postgres:15
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: subscriptions
+      PGUSER: postgres
+      PGPASSWORD: password
+    volumes:
+      - ./migrations:/migrations
+    command: |
+      sh -c "
+        until pg_isready -h postgres -p 5432; do
+          echo 'Waiting for database...'
+          sleep 2
+        done
+        echo 'Database is ready! Running migrations...'
+        for migration in /migrations/*.sql; do
+          echo 'Running migration: $$migration'
+          psql -f $$migration
+        done
+        echo 'Migrations completed!'
+      "
+
+  fill-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.fill
+    profiles: ["tools"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      - API_URL=http://app:8080
+    restart: "no"
 
 volumes:
   postgres_data:

@@ -27,3 +27,6 @@ go.work
 
 # Build artifacts
 /bin/
+
+# Test reports
+test-reports/

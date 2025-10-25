@@ -1,0 +1,13 @@
+server:
+  port: 8080
+
+database:
+  host: "postgres-test"
+  port: 5432
+  user: "postgres"
+  password: "password"
+  name: "subscriptions_test"
+  sslmode: "disable"
+
+logging:
+  level: "error"
