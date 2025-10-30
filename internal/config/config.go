@@ -12,7 +12,7 @@ import (
 type Config struct {
     Server   ServerConfig   `yaml:"server"`
     Database DatabaseConfig `yaml:"database"`
-    Logging  LoggingConfig  `yaml:"logging"`
+    Log  LogConfig  `yaml:"Log"`
 }
 
 type ServerConfig struct {
@@ -28,8 +28,11 @@ type DatabaseConfig struct {
     SSLMode  string `yaml:"sslmode"`
 }
 
-type LoggingConfig struct {
-    Level string `yaml:"level"`
+type LogConfig struct {
+    Level    string `yaml:"level"`
+    Format   string `yaml:"format"`
+    Output   string `yaml:"output"`
+    FilePath string `yaml:"filepath"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -69,8 +72,11 @@ func loadConfigFromEnv() *Config {
             Name:     getEnv("DB_NAME", "subscriptions"),
             SSLMode:  getEnv("DB_SSLMODE", "disable"),
         },
-        Logging: LoggingConfig{
-            Level: getEnv("LOG_LEVEL", "info"),
+        Log: LogConfig{
+            Level:    getEnv("LOG_LEVEL", "info"),
+            Format:   getEnv("LOG_FORMAT", "text"),
+            Output:   getEnv("LOG_OUTPUT", "stdout"),
+            FilePath: getEnv("LOG_FILE_PATH", "/var/log/subscription-service.log"),
         },
     }
 }
@@ -84,6 +90,22 @@ func overrideFromEnv(config *Config) {
 
     if host := os.Getenv("DB_HOST"); host != "" {
         config.Database.Host = host
+    }
+
+    if level := os.Getenv("LOG_LEVEL"); level != "" {
+        config.Log.Level = level
+    }
+
+    if format := os.Getenv("LOG_FORMAT"); format != "" {
+        config.Log.Format = format
+    }
+
+    if output := os.Getenv("LOG_OUTPUT"); output != "" {
+        config.Log.Output = output
+    }
+
+    if filePath := os.Getenv("LOG_FILE_PATH"); filePath != "" {
+        config.Log.FilePath = filePath
     }
 }
 
