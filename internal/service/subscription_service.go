@@ -13,7 +13,7 @@ type SubscriptionService interface {
     GetSubscription(ctx context.Context, id uuid.UUID) (*models.Subscription, error)
     UpdateSubscription(ctx context.Context, id uuid.UUID, req *models.UpdateSubscriptionRequest) error
     DeleteSubscription(ctx context.Context, id uuid.UUID) error
-    ListSubscriptions(ctx context.Context, userID *uuid.UUID, serviceName *string) ([]*models.Subscription, error)
+    ListSubscriptions(ctx context.Context, userID *uuid.UUID, serviceName *string, page int, pageSize int) ([]*models.Subscription, *models.Pagination, error)
     GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error)
 }
 
@@ -41,8 +41,8 @@ func (s *subscriptionService) DeleteSubscription(ctx context.Context, id uuid.UU
     return s.repo.Delete(ctx, id)
 }
 
-func (s *subscriptionService) ListSubscriptions(ctx context.Context, userID *uuid.UUID, serviceName *string) ([]*models.Subscription, error) {
-    return s.repo.List(ctx, userID, serviceName)
+func (s *subscriptionService) ListSubscriptions(ctx context.Context, userID *uuid.UUID, serviceName *string, page int, pageSize int) ([]*models.Subscription, *models.Pagination, error) {
+    return s.repo.List(ctx, userID, serviceName, page, pageSize)
 }
 
 func (s *subscriptionService) GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error) {

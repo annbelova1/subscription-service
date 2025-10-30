@@ -3,6 +3,7 @@ package handlers
 import (
     "net/http"
     "time"
+    "strconv"
 
     "github.com/gin-gonic/gin"
     "github.com/google/uuid"
@@ -179,14 +180,22 @@ func (h *SubscriptionHandler) ListSubscriptions(c *gin.Context) {
         serviceName = &serviceNameStr
     }
 
-    subscriptions, err := h.service.ListSubscriptions(c.Request.Context(), userID, serviceName)
+    page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+    pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+
+    subscriptions, pagination, err := h.service.ListSubscriptions(c.Request.Context(), userID, serviceName, page, pageSize)
     if err != nil {
         h.logger.Errorf("Failed to list subscriptions: %v", err)
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list subscriptions"})
         return
     }
 
-    c.JSON(http.StatusOK, subscriptions)
+    response := models.PaginatedResponse{
+        Data:       subscriptions,
+        Pagination: pagination,
+    }
+
+    c.JSON(http.StatusOK, response)
 }
 
 // GetSummary возвращает суммарную стоимость подписок за период

@@ -17,7 +17,7 @@ type SubscriptionRepository interface {
     GetByID(ctx context.Context, id uuid.UUID) (*models.Subscription, error)
     Update(ctx context.Context, id uuid.UUID, req *models.UpdateSubscriptionRequest) error
     Delete(ctx context.Context, id uuid.UUID) error
-    List(ctx context.Context, userID *uuid.UUID, serviceName *string) ([]*models.Subscription, error)
+    List(ctx context.Context, userID *uuid.UUID, serviceName *string, page, pageSize int) ([]*models.Subscription, *models.Pagination, error)
     GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error)
 }
 
@@ -189,12 +189,14 @@ func (r *subscriptionRepo) Delete(ctx context.Context, id uuid.UUID) error {
     return nil
 }
 
-func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceName *string) ([]*models.Subscription, error) {
+func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceName *string, page int, pageSize int) ([]*models.Subscription, *models.Pagination, error) {
     query := `
         SELECT id, service_name, price, user_id, start_date, end_date, created_at, updated_at
         FROM subscriptions 
         WHERE 1=1
     `
+    countQuery := `SELECT COUNT(*) FROM subscriptions WHERE 1=1`
+
     args := []interface{}{}
     argPos := 1
 
@@ -212,10 +214,23 @@ func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceN
 
     query += " ORDER BY created_at DESC"
 
+    if pageSize > 0 {
+        offset := (page - 1) * pageSize
+        query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argPos, argPos+1)
+        args = append(args, pageSize, offset)
+    }
+
+    var total int
+    err := r.db.QueryRowContext(ctx, countQuery, args[:len(args)-2]...).Scan(&total)
+    if err != nil {
+        log.Printf("Error counting subscriptions: %v", err)
+        return nil, nil, fmt.Errorf("failed to count subscriptions: %w", err)
+    }
+
     rows, err := r.db.QueryContext(ctx, query, args...)
     if err != nil {
         log.Printf("Error listing subscriptions: %v", err)
-        return nil, fmt.Errorf("failed to list subscriptions: %w", err)
+        return nil, nil, fmt.Errorf("failed to list subscriptions: %w", err)
     }
     defer rows.Close()
 
@@ -233,43 +248,69 @@ func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceN
             &sub.UpdatedAt,
         )
         if err != nil {
-            return nil, fmt.Errorf("failed to scan subscription: %w", err)
+            return nil, nil, fmt.Errorf("failed to scan subscription: %w", err)
         }
         subscriptions = append(subscriptions, &sub)
     }
 
-    log.Printf("Listed %d subscriptions", len(subscriptions))
-    return subscriptions, nil
+    pagination := &models.Pagination{
+        Page:       page,
+        PageSize:   pageSize,
+        Total:      total,
+        TotalPages: (total + pageSize - 1) / pageSize,
+    }
+
+    log.Printf("Listed %d subscriptions (page %d, pageSize %d, total %d)", 
+        len(subscriptions), page, pageSize, total)
+    return subscriptions, pagination, nil
 }
 
 func (r *subscriptionRepo) GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error) {
-    query := `SELECT COALESCE(SUM(price), 0) as total_cost FROM subscriptions WHERE 1=1`
-    args := []interface{}{}
-    argPos := 1
+    query := `
+        SELECT COALESCE(SUM(
+            price * 
+            CASE 
+                WHEN end_date IS NOT NULL THEN 
+                    EXTRACT(MONTH FROM AGE(end_date, start_date)) + 1
+                ELSE 
+                    EXTRACT(MONTH FROM AGE(COALESCE($1, CURRENT_DATE), start_date)) + 1
+            END
+        ), 0) as total_cost 
+        FROM subscriptions 
+        WHERE 1=1
+    `
+    
+    args := []interface{}{req.EndDate}
+    argPos := 2
 
-    if req.StartDate != nil && req.EndDate != nil {
-        query += fmt.Sprintf(" AND start_date <= $%d AND (end_date IS NULL OR end_date >= $%d)", argPos, argPos+1)
-        args = append(args, *req.EndDate, *req.StartDate)
-        argPos += 2
-    } else if req.StartDate != nil {
-        query += fmt.Sprintf(" AND (end_date IS NULL OR end_date >= $%d)", argPos)
+    var conditions []string
+
+    if req.StartDate != nil {
+        conditions = append(conditions, fmt.Sprintf("start_date >= $%d", argPos))
         args = append(args, *req.StartDate)
         argPos++
-    } else if req.EndDate != nil {
-        query += fmt.Sprintf(" AND start_date <= $%d", argPos)
+    }
+
+    if req.EndDate != nil {
+        conditions = append(conditions, fmt.Sprintf("(end_date IS NULL OR end_date <= $%d)", argPos))
         args = append(args, *req.EndDate)
         argPos++
     }
 
     if req.UserID != nil {
-        query += fmt.Sprintf(" AND user_id = $%d", argPos)
+        conditions = append(conditions, fmt.Sprintf("user_id = $%d", argPos))
         args = append(args, *req.UserID)
         argPos++
     }
 
     if req.ServiceName != nil {
-        query += fmt.Sprintf(" AND service_name = $%d", argPos)
+        conditions = append(conditions, fmt.Sprintf("service_name = $%d", argPos))
         args = append(args, *req.ServiceName)
+        argPos++
+    }
+
+    if len(conditions) > 0 {
+        query += " AND " + strings.Join(conditions, " AND ")
     }
 
     var totalCost float64

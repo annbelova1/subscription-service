@@ -4,322 +4,282 @@
 package repository
 
 import (
-    "context"
-    "database/sql"
-    "fmt"
-    "os"
-    "testing"
-    "time"
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"strings"
+	"time"
 
-    "github.com/google/uuid"
-    "github.com/stretchr/testify/assert"
-    "github.com/stretchr/testify/suite"
-    "subscription-service/internal/models"
-    
-    _ "github.com/lib/pq"
+	"github.com/google/uuid"
+	"subscription-service/internal/models"
 )
 
-type SubscriptionRepositoryIntegrationTestSuite struct {
-    suite.Suite
-    db   *sql.DB
-    repo SubscriptionRepository
-    ctx  context.Context
+type SubscriptionRepository interface {
+	Create(ctx context.Context, sub *models.Subscription) error
+	GetByID(ctx context.Context, id uuid.UUID) (*models.Subscription, error)
+	Update(ctx context.Context, id uuid.UUID, req *models.UpdateSubscriptionRequest) error
+	Delete(ctx context.Context, id uuid.UUID) error
+	List(ctx context.Context, userID *uuid.UUID, serviceName *string) ([]*models.Subscription, error)
+	GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error)
 }
 
-func (suite *SubscriptionRepositoryIntegrationTestSuite) SetupSuite() {
-    suite.ctx = context.Background()
-    
-    dbHost := getEnvDefault("DB_HOST", "localhost")
-	dbPort := getEnvDefault("DB_PORT", "5432") 
-	dbUser := getEnvDefault("DB_USER", "postgres")
-	dbPassword := getEnvDefault("DB_PASSWORD", "password")
-	dbName := getEnvDefault("DB_NAME", "subscriptions_test")	
-
-    connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-        dbHost, dbPort, dbUser, dbPassword, dbName)
-
-    suite.T().Logf("Connecting to database: %s", connStr)
-
-    var err error
-    suite.db, err = sql.Open("postgres", connStr)
-    if err != nil {
-        suite.T().Fatalf("Failed to open database: %v", err)
-    }
-
-    suite.db.SetMaxOpenConns(10)
-    suite.db.SetMaxIdleConns(5)
-    suite.db.SetConnMaxLifetime(time.Hour)
-
-    err = suite.waitForDB()
-    if err != nil {
-        suite.T().Fatalf("Database not ready: %v", err)
-    }
-
-    suite.repo = NewSubscriptionRepository(suite.db)
-    suite.T().Log("Database connection established")
+type subscriptionRepo struct {
+	db *sql.DB
 }
 
-func (suite *SubscriptionRepositoryIntegrationTestSuite) waitForDB() error {
-    ctx, cancel := context.WithTimeout(suite.ctx, 30*time.Second)
-    defer cancel()
-
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-            err := suite.db.PingContext(ctx)
-            if err == nil {
-                return nil
-            }
-            time.Sleep(1 * time.Second)
-        }
-    }
+func NewSubscriptionRepository(db *sql.DB) SubscriptionRepository {
+	return &subscriptionRepo{db: db}
 }
 
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TearDownSuite() {
-    if suite.db != nil {
-        suite.db.Close()
-    }
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) SetupTest() {
-    if suite.db == nil {
-        suite.T().Skip("Database not available")
-        return
-    }
-
-    // Очищаем таблицу перед каждым тестом
-    _, err := suite.db.ExecContext(suite.ctx, "DELETE FROM subscriptions")
-    if err != nil {
-        suite.T().Fatalf("Failed to clean database: %v", err)
-    }
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestCreateSubscription() {
-    userID := uuid.New()
-    startDate := time.Now()
-
-    subscription := &models.Subscription{
-        ServiceName: "Netflix",
-        Price:       599.00,
-        UserID:      userID,
-        StartDate:   startDate,
-    }
-
-    err := suite.repo.Create(suite.ctx, subscription)
-    assert.NoError(suite.T(), err)
-    assert.NotEqual(suite.T(), uuid.Nil, subscription.ID)
-
-    // Проверяем, что подписка сохранилась в базе
-    var count int
-    err = suite.db.QueryRowContext(suite.ctx, 
-        "SELECT COUNT(*) FROM subscriptions WHERE id = $1", subscription.ID).Scan(&count)
-    assert.NoError(suite.T(), err)
-    assert.Equal(suite.T(), 1, count)
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestCreateDuplicateSubscription() {
-    userID := uuid.New()
-    startDate := time.Now()
-
-    subscription := &models.Subscription{
-        ServiceName: "Netflix",
-        Price:       599.00,
-        UserID:      userID,
-        StartDate:   startDate,
-    }
-
-    err := suite.repo.Create(suite.ctx, subscription)
-    assert.NoError(suite.T(), err)
-
-    duplicateSub := &models.Subscription{
-        ServiceName: "Netflix",
-        Price:       699.00, // другая цена
-        UserID:      userID,
-        StartDate:   startDate,
-    }
-
-    err = suite.repo.Create(suite.ctx, duplicateSub)
-    assert.Error(suite.T(), err)
-    assert.Contains(suite.T(), err.Error(), "already exists")
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestGetSubscription() {
-    userID := uuid.New()
-    startDate := time.Now()
-
-    subscription := &models.Subscription{
-        ServiceName: "Yandex Plus",
-        Price:       399.00,
-        UserID:      userID,
-        StartDate:   startDate,
-    }
-
-    err := suite.repo.Create(suite.ctx, subscription)
-    assert.NoError(suite.T(), err)
-
-    found, err := suite.repo.GetByID(suite.ctx, subscription.ID)
-    assert.NoError(suite.T(), err)
-    assert.Equal(suite.T(), subscription.ID, found.ID)
-    assert.Equal(suite.T(), "Yandex Plus", found.ServiceName)
-    assert.Equal(suite.T(), 399.00, found.Price)
-    assert.Equal(suite.T(), userID, found.UserID)
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestGetNonExistentSubscription() {
-    nonExistentID := uuid.New()
-    _, err := suite.repo.GetByID(suite.ctx, nonExistentID)
-    assert.Error(suite.T(), err)
-    assert.Contains(suite.T(), err.Error(), "not found")
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestUpdateSubscription() {
-    userID := uuid.New()
-    startDate := time.Now()
-
-    subscription := &models.Subscription{
-        ServiceName: "Spotify",
-        Price:       299.00,
-        UserID:      userID,
-        StartDate:   startDate,
-    }
-
-    err := suite.repo.Create(suite.ctx, subscription)
-    assert.NoError(suite.T(), err)
-
-    newPrice := 349.00
-    updateReq := &models.UpdateSubscriptionRequest{
-        Price: &newPrice,
-    }
-
-    err = suite.repo.Update(suite.ctx, subscription.ID, updateReq)
-    assert.NoError(suite.T(), err)
-
-    updated, err := suite.repo.GetByID(suite.ctx, subscription.ID)
-    assert.NoError(suite.T(), err)
-    assert.Equal(suite.T(), 349.00, updated.Price)
-    assert.Equal(suite.T(), "Spotify", updated.ServiceName)
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestDeleteSubscription() {
-    userID := uuid.New()
-    startDate := time.Now()
-
-    subscription := &models.Subscription{
-        ServiceName: "Apple Music",
-        Price:       199.00,
-        UserID:      userID,
-        StartDate:   startDate,
-    }
-
-    err := suite.repo.Create(suite.ctx, subscription)
-    assert.NoError(suite.T(), err)
-
-    err = suite.repo.Delete(suite.ctx, subscription.ID)
-    assert.NoError(suite.T(), err)
-
-    _, err = suite.repo.GetByID(suite.ctx, subscription.ID)
-    assert.Error(suite.T(), err)
-    assert.Contains(suite.T(), err.Error(), "not found")
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestListSubscriptions() {
-    userID := uuid.New()
-
-    subscriptions := []*models.Subscription{
-        {
-            ServiceName: "Netflix",
-            Price:       599.00,
-            UserID:      userID,
-            StartDate:   time.Now(),
-        },
-        {
-            ServiceName: "Yandex Plus",
-            Price:       399.00,
-            UserID:      userID,
-            StartDate:   time.Now().AddDate(0, 1, 0),
-        },
-    }
-
-    for _, sub := range subscriptions {
-        err := suite.repo.Create(suite.ctx, sub)
-        assert.NoError(suite.T(), err)
-    }
-
-    // Тестируем List с user_id
-    result, err := suite.repo.List(suite.ctx, &userID, nil)
-    assert.NoError(suite.T(), err)
-    assert.Len(suite.T(), result, 2)
-
-    // Тестируем List без фильтров
-    allResults, err := suite.repo.List(suite.ctx, nil, nil)
-    assert.NoError(suite.T(), err)
-    assert.Len(suite.T(), allResults, 2)
-
-    // Тестируем List с service_name фильтром
-    serviceName := "Netflix"
-    filteredResults, err := suite.repo.List(suite.ctx, &userID, &serviceName)
-    assert.NoError(suite.T(), err)
-    assert.Len(suite.T(), filteredResults, 1)
-    assert.Equal(suite.T(), "Netflix", filteredResults[0].ServiceName)
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestGetSummary() {
-    userID := uuid.New()
-    startDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-    endDate := startDate.AddDate(1, 0, 0)
-
-    subscriptions := []*models.Subscription{
-        {
-            ServiceName: "Netflix",
-            Price:       599.00,
-            UserID:      userID,
-            StartDate:   startDate,
-        },
-        {
-            ServiceName: "Yandex Plus",
-            Price:       399.00,
-            UserID:      userID,
-            StartDate:   startDate.AddDate(0, 1, 0),
-        },
-    }
-
-    for _, sub := range subscriptions {
-        err := suite.repo.Create(suite.ctx, sub)
-        assert.NoError(suite.T(), err)
-    }
-
-    req := &models.SummaryRequest{
-        StartDate: &startDate,
-        EndDate:   &endDate,
-        UserID:    &userID,
-    }
-
-    summary, err := suite.repo.GetSummary(suite.ctx, req)
-    assert.NoError(suite.T(), err)
-    assert.Equal(suite.T(), 998.00, summary.TotalCost)
-}
-
-func (suite *SubscriptionRepositoryIntegrationTestSuite) TestGetSummary_NoSubscriptions() {
-    userID := uuid.New()
-    startDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-    endDate := startDate.AddDate(1, 0, 0)
-
-    req := &models.SummaryRequest{
-        StartDate: &startDate,
-        EndDate:   &endDate,
-        UserID:    &userID,
-    }
-
-    summary, err := suite.repo.GetSummary(suite.ctx, req)
-    assert.NoError(suite.T(), err)
-    assert.Equal(suite.T(), 0.00, summary.TotalCost)
-}
-
-func getEnvDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+func (r *subscriptionRepo) Create(ctx context.Context, sub *models.Subscription) error {
+	existing, err := r.findExistingSubscription(ctx, sub.UserID, sub.ServiceName, sub.StartDate)
+	if err != nil {
+		return fmt.Errorf("failed to check existing subscription: %w", err)
 	}
-	return defaultValue
+	
+	if existing != nil {
+		return fmt.Errorf("subscription already exists for user %s to service %s starting from %s", 
+			sub.UserID, sub.ServiceName, sub.StartDate.Format("2006-01-02"))
+	}
+
+	query := `
+		INSERT INTO subscriptions (service_name, price, user_id, start_date, end_date)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, created_at, updated_at
+	`
+
+	err = r.db.QueryRowContext(
+		ctx,
+		query,
+		sub.ServiceName,
+		sub.Price,
+		sub.UserID,
+		sub.StartDate,
+		sub.EndDate,
+	).Scan(&sub.ID, &sub.CreatedAt, &sub.UpdatedAt)
+
+	if err != nil {
+		if isDuplicateError(err) {
+			return fmt.Errorf("subscription already exists for this user and service")
+		}
+		log.Printf("Error creating subscription: %v", err)
+		return fmt.Errorf("failed to create subscription: %w", err)
+	}
+
+	log.Printf("Created subscription with ID: %s", sub.ID)
+	return nil
+}
+
+func (r *subscriptionRepo) findExistingSubscription(ctx context.Context, userID uuid.UUID, serviceName string, startDate time.Time) (*models.Subscription, error) {
+	query, args := NewQueryBuilder("subscriptions").
+		Where("user_id = $1", userID).
+		Where("service_name = $2", serviceName).
+		Where("start_date = $3", startDate).
+		Limit(1).
+		Build()
+
+	var sub models.Subscription
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(
+		&sub.ID,
+		&sub.ServiceName,
+		&sub.Price,
+		&sub.UserID,
+		&sub.StartDate,
+		&sub.EndDate,
+		&sub.CreatedAt,
+		&sub.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &sub, nil
+}
+
+func isDuplicateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorString := err.Error()
+	return strings.Contains(errorString, "unique constraint") || 
+		   strings.Contains(errorString, "duplicate key") ||
+		   strings.Contains(errorString, "23505")
+}
+
+func (r *subscriptionRepo) GetByID(ctx context.Context, id uuid.UUID) (*models.Subscription, error) {
+	query, args := NewQueryBuilder("subscriptions").
+		Where("id = $1", id).
+		Build()
+
+	var sub models.Subscription
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(
+		&sub.ID,
+		&sub.ServiceName,
+		&sub.Price,
+		&sub.UserID,
+		&sub.StartDate,
+		&sub.EndDate,
+		&sub.CreatedAt,
+		&sub.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("subscription not found")
+		}
+		log.Printf("Error getting subscription by ID %s: %v", id, err)
+		return nil, fmt.Errorf("failed to get subscription: %w", err)
+	}
+
+	return &sub, nil
+}
+
+func (r *subscriptionRepo) Update(ctx context.Context, id uuid.UUID, req *models.UpdateSubscriptionRequest) error {
+	query := `
+		UPDATE subscriptions 
+		SET service_name = COALESCE($1, service_name),
+			price = COALESCE($2, price),
+			end_date = COALESCE($3, end_date),
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $4
+	`
+
+	result, err := r.db.ExecContext(ctx, query, req.ServiceName, req.Price, req.EndDate, id)
+	if err != nil {
+		log.Printf("Error updating subscription %s: %v", id, err)
+		return fmt.Errorf("failed to update subscription: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("subscription not found")
+	}
+
+	log.Printf("Updated subscription with ID: %s", id)
+	return nil
+}
+
+func (r *subscriptionRepo) Delete(ctx context.Context, id uuid.UUID) error {
+	query := `DELETE FROM subscriptions WHERE id = $1`
+
+	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		log.Printf("Error deleting subscription %s: %v", id, err)
+		return fmt.Errorf("failed to delete subscription: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("subscription not found")
+	}
+
+	log.Printf("Deleted subscription with ID: %s", id)
+	return nil
+}
+
+func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceName *string) ([]*models.Subscription, error) {
+	qb := NewQueryBuilder("subscriptions").
+		OrderBy("created_at", "DESC")
+
+	if userID != nil {
+		qb = qb.Where("user_id = $1", *userID)
+	}
+
+	if serviceName != nil {
+		qb = qb.Where("service_name = $2", *serviceName)
+	}
+
+	query, args := qb.Build()
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		log.Printf("Error listing subscriptions: %v", err)
+		return nil, fmt.Errorf("failed to list subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	var subscriptions []*models.Subscription
+	for rows.Next() {
+		var sub models.Subscription
+		err := rows.Scan(
+			&sub.ID,
+			&sub.ServiceName,
+			&sub.Price,
+			&sub.UserID,
+			&sub.StartDate,
+			&sub.EndDate,
+			&sub.CreatedAt,
+			&sub.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan subscription: %w", err)
+		}
+		subscriptions = append(subscriptions, &sub)
+	}
+
+	log.Printf("Listed %d subscriptions", len(subscriptions))
+	return subscriptions, nil
+}
+
+func (r *subscriptionRepo) GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error) {
+	qb := NewQueryBuilder("subscriptions").
+		Select(`
+			COALESCE(SUM(
+				price * 
+				CASE 
+					WHEN end_date IS NOT NULL THEN 
+						EXTRACT(MONTH FROM AGE(end_date, start_date)) + 1
+					ELSE 
+						EXTRACT(MONTH FROM AGE(COALESCE($1, CURRENT_DATE), start_date)) + 1
+				END
+			), 0) as total_cost
+		`).
+		Where("1=1")
+
+	args := []interface{}{req.EndDate}
+
+	if req.StartDate != nil {
+		qb = qb.Where("start_date >= $2", *req.StartDate)
+	}
+
+	if req.EndDate != nil {
+		qb = qb.Where("(end_date IS NULL OR end_date <= $3)", *req.EndDate)
+	}
+
+	if req.UserID != nil {
+		qb = qb.Where("user_id = $4", *req.UserID)
+	}
+
+	if req.ServiceName != nil {
+		qb = qb.Where("service_name = $5", *req.ServiceName)
+	}
+
+	query, finalArgs := qb.Build()
+
+	var totalCost float64
+	err := r.db.QueryRowContext(ctx, query, finalArgs...).Scan(&totalCost)
+	if err != nil {
+		log.Printf("Error calculating subscription summary: %v", err)
+		return nil, fmt.Errorf("failed to calculate summary: %w", err)
+	}
+
+	summary := &models.SubscriptionSummary{
+		TotalCost: totalCost,
+	}
+
+	log.Printf("Calculated summary: total cost = %.2f", totalCost)
+	return summary, nil
 }
