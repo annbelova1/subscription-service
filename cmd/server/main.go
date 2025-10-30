@@ -1,9 +1,14 @@
 package main
 
 import (
+    "context"
+    "database/sql"
     "log"
     "net/http"
     "os"
+    "os/signal"
+    "strconv"
+    "syscall"
     "time"
 
     "github.com/gin-gonic/gin"
@@ -72,10 +77,54 @@ func main() {
         c.JSON(http.StatusOK, gin.H{"status": "ok"})
     })
 
-    logger.Infof("Starting server on port %d", cfg.Server.Port)
-    if err := router.Run(":8080"); err != nil {
-        logger.Fatalf("Failed to start server: %v", err)
+
+    // router.Run() уже внутри себя запускает HTTP сервер, и он блокирующий. Если обернуть его в goroutine, то main функция продолжит выполнение и сразу завершит программу.
+    // logger.Infof("Starting server on port %d", cfg.Server.Port)
+    // if err := router.Run(":8080"); err != nil {
+    //     logger.Fatalf("Failed to start server: %v", err)
+    // }
+
+    srv := &http.Server{
+        Addr:    ":" + strconv.Itoa(cfg.Server.Port),
+        Handler: router,
     }
+
+    go func() {
+        logger.Infof("Starting server on port %d", cfg.Server.Port)
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            logger.Fatalf("Failed to start server: %v", err)
+        }
+    }()
+
+    waitForShutdown(srv, db, logger, cfg.Server.ShutdownTimeout)
+}
+
+func waitForShutdown(srv *http.Server, db *sql.DB, logger *logrus.Logger, timeout time.Duration) {
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    
+    // Блокируемся до получения сигнала
+    sig := <-quit
+    logger.Infof("Received signal: %s. Starting graceful shutdown...", sig)
+
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    defer cancel()
+
+    logger.Info("Shutting down HTTP server...")
+    if err := srv.Shutdown(ctx); err != nil {
+        logger.Errorf("HTTP server shutdown error: %v", err)
+    } else {
+        logger.Info("HTTP server stopped gracefully")
+    }
+
+    logger.Info("Closing database connections...")
+    if err := db.Close(); err != nil {
+        logger.Errorf("Database connection close error: %v", err)
+    } else {
+        logger.Info("Database connections closed")
+    }
+
+    logger.Info("Application shutdown completed")
 }
 
 func setupLogger(cfg *config.Config) *logrus.Logger {

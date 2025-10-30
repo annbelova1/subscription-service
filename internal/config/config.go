@@ -4,6 +4,7 @@ import (
     "log"
     "os"
     "strconv"
+    "time"
 
     "github.com/joho/godotenv"
     "gopkg.in/yaml.v3"
@@ -17,6 +18,7 @@ type Config struct {
 
 type ServerConfig struct {
     Port int `yaml:"port"`
+    ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 }
 
 type DatabaseConfig struct {
@@ -59,10 +61,13 @@ func LoadConfig() (*Config, error) {
 func loadConfigFromEnv() *Config {
     port, _ := strconv.Atoi(getEnv("SERVER_PORT", "8080"))
     dbPort, _ := strconv.Atoi(getEnv("DB_PORT", "5432"))
+    timeoutSec, _ := strconv.Atoi(getEnv("SHUTDOWN_TIMEOUT", "30"))
+    shutdownTimeout := time.Duration(timeoutSec) * time.Second
 
     return &Config{
         Server: ServerConfig{
             Port: port,
+            ShutdownTimeout: shutdownTimeout,
         },
         Database: DatabaseConfig{
             Host:     getEnv("DB_HOST", "localhost"),

@@ -1,5 +1,6 @@
 server:
   port: 8080
+  shutdown_timeout: 30s
 
 database:
   host: "postgres"
@@ -9,5 +10,7 @@ database:
   name: "subscriptions"
   sslmode: "disable"
 
-logging:
+log:
   level: "info"
+  format: "text"
+  output: "stdout"
