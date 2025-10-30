@@ -14,23 +14,28 @@ type Subscription struct {
 	Price       float64   `json:"price"`
 	UserID      string    `json:"user_id"`
 	StartDate   time.Time `json:"start_date"`
+	EndDate     *time.Time `json:"end_date,omitempty"`
 }
 
 func main() {
 	baseURL := "http://localhost:8080/api/v1/subscriptions"
 	userID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
+	now := time.Now()
+	customEndDate1 := now.AddDate(0, 2, 0)
+	customEndDate2 := now.AddDate(0, 0, 45)
+
 	subscriptions := []Subscription{
-		{"Yandex Plus", 399.00, userID, time.Now().AddDate(0, 0, -30)},
-		{"Netflix", 799.00, userID, time.Now().AddDate(0, 0, -15)},
-		{"Spotify", 299.00, userID, time.Now().AddDate(0, 0, -10)},
-		{"YouTube Premium", 459.00, userID, time.Now().AddDate(0, 0, -5)},
-		{"Apple Music", 199.00, userID, time.Now().AddDate(0, 0, -20)},
-		{"Amazon Prime", 299.00, userID, time.Now().AddDate(0, 0, -25)},
-		{"Microsoft 365", 399.00, userID, time.Now().AddDate(0, 0, -8)},
-		{"PlayStation Plus", 599.00, userID, time.Now().AddDate(0, 0, -12)},
-		{"Xbox Game Pass", 349.00, userID, time.Now().AddDate(0, 0, -18)},
-		{"Telegram Premium", 299.00, userID, time.Now().AddDate(0, 0, -3)},
+		{"Yandex Plus", 399.00, userID, time.Now().AddDate(0, 0, -30), &customEndDate1},
+		{"Netflix", 799.00, userID, time.Now().AddDate(0, 0, -15), &customEndDate2},
+		{"Spotify", 299.00, userID, time.Now().AddDate(0, 0, -10), nil},
+		{"YouTube Premium", 459.00, userID, time.Now().AddDate(0, 0, -5), nil},
+		{"Apple Music", 199.00, userID, time.Now().AddDate(0, 0, -20), nil},
+		{"Amazon Prime", 299.00, userID, time.Now().AddDate(0, 0, -25), nil},
+		{"Microsoft 365", 399.00, userID, time.Now().AddDate(0, 0, -8), nil},
+		{"PlayStation Plus", 599.00, userID, time.Now().AddDate(0, 0, -12), nil},
+		{"Xbox Game Pass", 349.00, userID, time.Now().AddDate(0, 0, -18), nil},
+		{"Telegram Premium", 299.00, userID, time.Now().AddDate(0, 0, -3), nil},
 	}
 
 	for _, sub := range subscriptions {
@@ -39,7 +44,7 @@ func main() {
 			continue
 		}
 		fmt.Printf("✓ Created subscription: %s (%.2f руб)\n", sub.ServiceName, sub.Price)
-		time.Sleep(100 * time.Millisecond) // небольшая пауза
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	fmt.Println("All subscriptions created successfully!")
