@@ -13,6 +13,7 @@ RUN go install github.com/swaggo/swag/cmd/swag@latest
 RUN swag init -g cmd/server/main.go
 
 RUN go build -o main ./cmd/server
+RUN mkdir -p /var/log
 
 EXPOSE 8080
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -38,16 +39,19 @@ func main() {
 		{"Telegram Premium", 299.00, userID, time.Now().AddDate(0, 0, -3), nil},
 	}
 
-	for _, sub := range subscriptions {
+	successCount := 0
+	for i, sub := range subscriptions {
+		fmt.Printf("Creating %d/%d: %s...\n", i+1, len(subscriptions), sub.ServiceName)
 		if err := createSubscription(baseURL, sub); err != nil {
 			log.Printf("Error creating subscription %s: %v", sub.ServiceName, err)
 			continue
 		}
 		fmt.Printf("✓ Created subscription: %s (%.2f руб)\n", sub.ServiceName, sub.Price)
-		time.Sleep(100 * time.Millisecond)
+		successCount++
+		time.Sleep(200 * time.Millisecond)
 	}
 
-	fmt.Println("All subscriptions created successfully!")
+	fmt.Printf("Successfully created %d out of %d subscriptions\n", successCount, len(subscriptions))
 }
 
 func createSubscription(url string, sub Subscription) error {
@@ -56,14 +60,19 @@ func createSubscription(url string, sub Subscription) error {
 		return fmt.Errorf("marshal error: %w", err)
 	}
 
+	// Debug: Print what we're sending
+	fmt.Printf("Sending: %s\n", string(jsonData))
+
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("HTTP request error: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("HTTP status %d", resp.StatusCode)
+		return fmt.Errorf("HTTP status %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil

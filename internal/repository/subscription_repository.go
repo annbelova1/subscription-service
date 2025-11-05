@@ -30,14 +30,23 @@ func NewSubscriptionRepository(db *sql.DB) SubscriptionRepository {
 }
 
 func (r *subscriptionRepo) Create(ctx context.Context, sub *models.Subscription) error {
-    existing, err := r.findExistingSubscription(ctx, sub.UserID, sub.ServiceName, sub.StartDate)
+    // Сначала логируем что мы пытаемся создать
+    log.Printf("Attempting to create subscription: user=%s, service=%s, start=%s, end=%v", 
+        sub.UserID, sub.ServiceName, sub.StartDate.Format(time.RFC3339), sub.EndDate)
+
+    // Проверяем существующие подписки на пересечение дат
+    existing, err := r.findOverlappingSubscription(ctx, sub.UserID, sub.ServiceName, sub.StartDate, sub.EndDate)
     if err != nil {
-        return fmt.Errorf("failed to check existing subscription: %w", err)
+        log.Printf("Error checking overlapping subscriptions: %v", err)
+        return fmt.Errorf("failed to check overlapping subscriptions: %w", err)
     }
     
     if existing != nil {
-        return fmt.Errorf("subscription already exists for user %s to service %s starting from %s", 
-            sub.UserID, sub.ServiceName, sub.StartDate.Format("2006-01-02"))
+        log.Printf("Overlapping subscription found: %s", existing.ID)
+        return fmt.Errorf("subscription already exists for user %s to service %s overlapping with dates %s - %s", 
+            sub.UserID, sub.ServiceName, 
+            sub.StartDate.Format("2006-01-02"),
+            formatEndDate(sub.EndDate))
     }
 
     query := `
@@ -45,6 +54,10 @@ func (r *subscriptionRepo) Create(ctx context.Context, sub *models.Subscription)
         VALUES ($1, $2, $3, $4, $5)
         RETURNING id, created_at, updated_at
     `
+
+    // Логируем SQL запрос и параметры
+    log.Printf("Executing SQL: %s with params: %s, %.2f, %s, %s, %v", 
+        query, sub.ServiceName, sub.Price, sub.UserID, sub.StartDate.Format(time.RFC3339), sub.EndDate)
 
     err = r.db.QueryRowContext(
         ctx,
@@ -57,27 +70,36 @@ func (r *subscriptionRepo) Create(ctx context.Context, sub *models.Subscription)
     ).Scan(&sub.ID, &sub.CreatedAt, &sub.UpdatedAt)
 
     if err != nil {
+        log.Printf("Database error in Create: %v", err)
         if isDuplicateError(err) {
             return fmt.Errorf("subscription already exists for this user and service")
         }
-        log.Printf("Error creating subscription: %v", err)
         return fmt.Errorf("failed to create subscription: %w", err)
     }
 
-    log.Printf("Created subscription with ID: %s", sub.ID)
+    log.Printf("Successfully created subscription with ID: %s", sub.ID)
     return nil
 }
 
-func (r *subscriptionRepo) findExistingSubscription(ctx context.Context, userID uuid.UUID, serviceName string, startDate time.Time) (*models.Subscription, error) {
+func (r *subscriptionRepo) findOverlappingSubscription(ctx context.Context, userID uuid.UUID, serviceName string, startDate time.Time, endDate *time.Time) (*models.Subscription, error) {
     query := `
         SELECT id, service_name, price, user_id, start_date, end_date, created_at, updated_at
         FROM subscriptions 
-        WHERE user_id = $1 AND service_name = $2 AND start_date = $3
+        WHERE user_id = $1 
+        AND service_name = $2
+        AND (
+            start_date <= COALESCE($4, 'infinity'::timestamp) 
+            AND 
+            COALESCE(end_date, 'infinity'::timestamp) >= $3
+        )
         LIMIT 1
     `
+    
+    log.Printf("Checking overlaps with SQL: %s, params: %s, %s, %s, %v", 
+        query, userID, serviceName, startDate.Format(time.RFC3339), endDate)
 
     var sub models.Subscription
-    err := r.db.QueryRowContext(ctx, query, userID, serviceName, startDate).Scan(
+    err := r.db.QueryRowContext(ctx, query, userID, serviceName, startDate, endDate).Scan(
         &sub.ID,
         &sub.ServiceName,
         &sub.Price,
@@ -90,12 +112,23 @@ func (r *subscriptionRepo) findExistingSubscription(ctx context.Context, userID 
 
     if err != nil {
         if err == sql.ErrNoRows {
+            log.Printf("No overlapping subscriptions found")
             return nil, nil
         }
+        log.Printf("Error in findOverlappingSubscription: %v", err)
         return nil, err
     }
 
+    log.Printf("Found overlapping subscription: %s", sub.ID)
     return &sub, nil
+}
+
+// Вспомогательная функция для форматирования даты окончания
+func formatEndDate(endDate *time.Time) string {
+    if endDate == nil {
+        return "∞"
+    }
+    return endDate.Format("2006-01-02")
 }
 
 func isDuplicateError(err error) bool {
@@ -107,6 +140,7 @@ func isDuplicateError(err error) bool {
            strings.Contains(errorString, "duplicate key") ||
            strings.Contains(errorString, "23505")
 }
+
 
 func (r *subscriptionRepo) GetByID(ctx context.Context, id uuid.UUID) (*models.Subscription, error) {
     query := `
@@ -190,42 +224,32 @@ func (r *subscriptionRepo) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceName *string, page int, pageSize int) ([]*models.Subscription, *models.Pagination, error) {
-    query := `
-        SELECT id, service_name, price, user_id, start_date, end_date, created_at, updated_at
-        FROM subscriptions 
-        WHERE 1=1
-    `
-    countQuery := `SELECT COUNT(*) FROM subscriptions WHERE 1=1`
-
-    args := []interface{}{}
-    argPos := 1
+    qb := NewQueryBuilder("subscriptions").
+        OrderBy("created_at", "DESC")
 
     if userID != nil {
-        query += fmt.Sprintf(" AND user_id = $%d", argPos)
-        args = append(args, *userID)
-        argPos++
+        qb = qb.Where("user_id = $1", *userID)
     }
-
     if serviceName != nil {
-        query += fmt.Sprintf(" AND service_name = $%d", argPos)
-        args = append(args, *serviceName)
-        argPos++
+        qb = qb.Where("service_name = $2", *serviceName)
     }
 
-    query += " ORDER BY created_at DESC"
-
-    if pageSize > 0 {
-        offset := (page - 1) * pageSize
-        query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argPos, argPos+1)
-        args = append(args, pageSize, offset)
-    }
+    countQuery, countArgs := qb.Build()
+    countQuery = "SELECT COUNT(*) FROM (" + countQuery + ") AS count_query"
 
     var total int
-    err := r.db.QueryRowContext(ctx, countQuery, args[:len(args)-2]...).Scan(&total)
+    err := r.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total)
     if err != nil {
         log.Printf("Error counting subscriptions: %v", err)
         return nil, nil, fmt.Errorf("failed to count subscriptions: %w", err)
     }
+
+    if pageSize > 0 {
+        offset := (page - 1) * pageSize
+        qb = qb.Limit(pageSize).Offset(offset)
+    }
+
+    query, args := qb.Build()
 
     rows, err := r.db.QueryContext(ctx, query, args...)
     if err != nil {
@@ -266,8 +290,8 @@ func (r *subscriptionRepo) List(ctx context.Context, userID *uuid.UUID, serviceN
 }
 
 func (r *subscriptionRepo) GetSummary(ctx context.Context, req *models.SummaryRequest) (*models.SubscriptionSummary, error) {
-    query := `
-        SELECT COALESCE(SUM(
+    qb := NewQueryBuilder("subscriptions").
+        Select(`COALESCE(SUM(
             price * 
             CASE 
                 WHEN end_date IS NOT NULL THEN 
@@ -275,46 +299,36 @@ func (r *subscriptionRepo) GetSummary(ctx context.Context, req *models.SummaryRe
                 ELSE 
                     EXTRACT(MONTH FROM AGE(COALESCE($1, CURRENT_DATE), start_date)) + 1
             END
-        ), 0) as total_cost 
-        FROM subscriptions 
-        WHERE 1=1
-    `
-    
-    args := []interface{}{req.EndDate}
+        ), 0) as total_cost`).
+        Where("1=1")
+
+    // Начинаем с $2, так как $1 уже используется в SELECT
     argPos := 2
 
-    var conditions []string
-
     if req.StartDate != nil {
-        conditions = append(conditions, fmt.Sprintf("start_date >= $%d", argPos))
-        args = append(args, *req.StartDate)
+        qb = qb.Where(fmt.Sprintf("start_date >= $%d", argPos), *req.StartDate)
         argPos++
     }
-
     if req.EndDate != nil {
-        conditions = append(conditions, fmt.Sprintf("(end_date IS NULL OR end_date <= $%d)", argPos))
-        args = append(args, *req.EndDate)
+        qb = qb.Where(fmt.Sprintf("(end_date IS NULL OR end_date <= $%d)", argPos), *req.EndDate)
         argPos++
     }
-
     if req.UserID != nil {
-        conditions = append(conditions, fmt.Sprintf("user_id = $%d", argPos))
-        args = append(args, *req.UserID)
+        qb = qb.Where(fmt.Sprintf("user_id = $%d", argPos), *req.UserID)
         argPos++
     }
-
     if req.ServiceName != nil {
-        conditions = append(conditions, fmt.Sprintf("service_name = $%d", argPos))
-        args = append(args, *req.ServiceName)
-        argPos++
+        qb = qb.Where(fmt.Sprintf("service_name = $%d", argPos), *req.ServiceName)
     }
 
-    if len(conditions) > 0 {
-        query += " AND " + strings.Join(conditions, " AND ")
-    }
+    query, finalArgs := qb.Build()
+
+    // Добавляем req.EndDate как первый параметр для COALESCE
+    allArgs := []interface{}{req.EndDate}
+    allArgs = append(allArgs, finalArgs...)
 
     var totalCost float64
-    err := r.db.QueryRowContext(ctx, query, args...).Scan(&totalCost)
+    err := r.db.QueryRowContext(ctx, query, allArgs...).Scan(&totalCost)
     if err != nil {
         log.Printf("Error calculating subscription summary: %v", err)
         return nil, fmt.Errorf("failed to calculate summary: %w", err)

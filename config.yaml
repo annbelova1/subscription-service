@@ -13,4 +13,5 @@ database:
 log:
   level: "info"
   format: "text"
-  output: "stdout"
+  output: "file"
+  file_path: "./log/subscription-service.log"

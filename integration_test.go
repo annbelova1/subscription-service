@@ -26,10 +26,8 @@ import (
 )
 
 func getTestDBConfig() *config.DatabaseConfig {
-    // В Docker используем postgres-test, локально - localhost
     dbHost := os.Getenv("DB_HOST")
     if dbHost == "" {
-        // Если переменная окружения не установлена, проверяем, находимся ли мы в Docker
         if _, err := os.Stat("/.dockerenv"); err == nil {
             dbHost = "postgres-test"
         } else {

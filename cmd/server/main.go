@@ -10,6 +10,7 @@ import (
     "strconv"
     "syscall"
     "time"
+    "path/filepath"
 
     "github.com/gin-gonic/gin"
     "github.com/sirupsen/logrus"
@@ -24,6 +25,30 @@ import (
 
     _ "subscription-service/docs"
 )
+
+// MultiOutputHook для записи в несколько выходов
+type MultiOutputHook struct {
+    file *os.File
+    formatter logrus.Formatter
+}
+
+func (h *MultiOutputHook) Levels() []logrus.Level {
+    return logrus.AllLevels
+}
+
+func (h *MultiOutputHook) Fire(entry *logrus.Entry) error {
+    // Запись в файл если он открыт
+    if h.file != nil {
+        line, err := h.formatter.Format(entry)
+        if err != nil {
+            return err
+        }
+        if _, err := h.file.Write(line); err != nil {
+            return err
+        }
+    }
+    return nil
+}
 
 // @title Subscription Service API
 // @version 1.0
@@ -124,6 +149,15 @@ func waitForShutdown(srv *http.Server, db *sql.DB, logger *logrus.Logger, timeou
         logger.Info("Database connections closed")
     }
 
+    logger.Info("Closing log files...")
+    for _, hook := range logger.Hooks {
+        for _, h := range hook {
+            if multiHook, ok := h.(*MultiOutputHook); ok && multiHook.file != nil {
+                multiHook.file.Close()
+            }
+        }
+    }
+
     logger.Info("Application shutdown completed")
 }
 
@@ -150,16 +184,27 @@ func setupLogger(cfg *config.Config) *logrus.Logger {
         })
     }
 
+    logger.SetOutput(os.Stdout)
+
+    // Добавляем файловый вывод если нужно
     if cfg.Log.Output == "file" && cfg.Log.FilePath != "" {
-        file, err := os.OpenFile(cfg.Log.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-        if err != nil {
-            logger.Warnf("Failed to open log file, using stdout: %v", err)
-            logger.SetOutput(os.Stdout)
+        // Создаем директорию если её нет
+        dir := filepath.Dir(cfg.Log.FilePath)
+        if err := os.MkdirAll(dir, 0755); err != nil {
+            logger.Warnf("Failed to create log directory %s: %v", dir, err)
         } else {
-            logger.SetOutput(file)
+            file, err := os.OpenFile(cfg.Log.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+            if err != nil {
+                logger.Warnf("Failed to open log file %s: %v", cfg.Log.FilePath, err)
+            } else {
+                // Добавляем hook для записи в файл
+                logger.AddHook(&MultiOutputHook{
+                    file: file,
+                    formatter: logger.Formatter,
+                })
+                logger.Infof("Logging to file: %s", cfg.Log.FilePath)
+            }
         }
-    } else {
-        logger.SetOutput(os.Stdout)
     }
 
     logger.Infof("Logger initialized with level: %s", logger.GetLevel())

@@ -53,7 +53,7 @@ func (h *SubscriptionHandler) CreateSubscription(c *gin.Context) {
 
     if err := h.service.CreateSubscription(c.Request.Context(), subscription); err != nil {
         h.logger.Errorf("Failed to create subscription: %v", err)
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription"})
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
